@@ -2,6 +2,14 @@ prop.table(table(train$Survived,train$Sex),1)
 train$Child <- NA
 train$Child[train$Age<18]<-"Child"
 train$Child[train$Age>=18]<-"Adult"
+train$Survived <- as.factor(train$Survived)
+
+test <- read.csv('munged_test.csv')
+test$Child <- as.factor(test$Child)
+test$Child[test$Age<18]<-"Child"
+test$Child[test$Age>=18]<-"Adult"
+
+
 
 #Predicting on a copy of the test set
 train_males <- train[train$Sex == "male",]
@@ -165,21 +173,21 @@ getTitle <- function(data) {
 }   
 
 #Somehow the function just doesn't work
-title.dot.start <- regexpr("\\,[A-Z ]{1,20}\\.", train$Name, TRUE)
+title.dot.start <- regexpr("\\,[A-Z ]{1,20}\\.", test$Name, TRUE)
 title.comma.end <- title.dot.start + attr(title.dot.start, "match.length")-1
-train$Title <- substr(train$Name, title.dot.start+2, title.comma.end-1)
+test$Title <- substr(test$Name, title.dot.start+2, title.comma.end-1)
 # Finding unique values
-unique(train$Title)
+unique(test$Title)
 
 # See distribution of titles
 options(digits=2)
 require(Hmisc)
-bystats(train$Age, train$Title, 
+bystats(test$Age, test$Title, 
         fun=function(x)c(Mean=mean(x),Median=median(x)))
 
 # Missing titles are: Dr, Master, Miss, Mr, Mrs
 ## list of titles with missing Age value(s) requiring imputation
-titles.na.train <- c("Dr", "Master", "Mrs", "Miss", "Mr")
+titles.na.test <- c("Dr", "Master", "Mrs", "Miss", "Mr")
 
 imputeMedian <- function(impute.var, filter.var, var.levels) {
   for (v in var.levels) {
@@ -190,41 +198,38 @@ imputeMedian <- function(impute.var, filter.var, var.levels) {
 }
 
 # Imputing values in the Age field
-train$Age <- imputeMedian(train$Age, train$Title, 
-                             titles.na.train)
+test$Age <- imputeMedian(test$Age, test$Title, 
+                             titles.na.test)
 
 # Imputing values for the Embarked field
-train$Embarked[which(is.na(train$Embarked))] <- 'S'
+test$Embarked[which(is.na(test$Embarked))] <- 'S'
 
 
 # Finding Fare records 
 
-subset(train, Fare < 7)[order(subset(train, Fare < 7)$Fare, 
-                                 subset(train, Fare < 7)$Pclass), 
+subset(test, Fare < 7)[order(subset(test, Fare < 7)$Fare, 
+                                 subset(test, Fare < 7)$Pclass), 
                            c("Age", "Title", "Pclass", "Fare")]
 
 
 ## impute missings on Fare feature with median fare by Pclass
-train$Fare[ which(train$Fare == 0 )] <- NA
-train$Fare <- imputeMedian(train$Fare, train$Pclass, 
-                              as.numeric(levels(train$Pclass)))
+test$Fare[ which(test$Fare == 0 )] <- NA
+test$Fare <- imputeMedian(test$Fare, test$Pclass, 
+                              as.numeric(levels(test$Pclass)))
 
 
 #Plotting age by title
-train$Title <- factor(train$Title,
-                         c("Capt","Col","Major","Sir","Lady","Rev",
+test$Title <- factor(test$Title,c("Capt","Col","Major","Sir","Lady","Rev",
                            "Dr","Don","Jonkheer","the Countess","Mrs",
                            "Ms","Mr","Mme","Mlle","Miss","Master"))
 
-boxplot(train$Age ~ train$Title, 
+boxplot(test$Age ~ test$Title, 
         main="Passenger Age by Title", xlab="Title", ylab="Age")
 
-#Making a random forest model
-measurements <- formula(Survived ~ Pclass,Name,Sex,Age,SibSp,Parch,Ticket,Fare)
-model <- randomForest(measurements,data=train)
-predictions <- predict(model,test_lols)
-forest_accuracy <- sum(test_lols$Survived == predictions)/nrow(test_lols)
-table(pred = predictions, true = test_lols$Survived)
+
+
+
+
 
 ## function for assigning a new title value to old title(s) 
 changeTitles <- function(data, old.titles, new.title) {
@@ -234,8 +239,106 @@ changeTitles <- function(data, old.titles, new.title) {
   return (data$Title)
 }
 ## Title consolidation
-train$Title <- changeTitles(train, c("Capt", "Col", "Don", "Dr", "Jonkheer", "Lady", "Major", "Rev", "Sir"),"Noble")
-train$Title <- changeTitles(train, c("the Countess", "Ms"), "Mrs")
-train$Title <- changeTitles(train, c("Mlle", "Mme"), "Miss")
-train$Title <- as.factor(train$Title)
+test$Title <- changeTitles(test, c("Capt", "Col", "Don", "Dr", "Jonkheer", "Lady", "Major", "Rev", "Sir"),"Noble")
+test$Title <- changeTitles(test, c("the Countess", "Ms"), "Mrs")
+test$Title <- changeTitles(test, c("Mlle", "Mme"), "Miss")
+test$Title <- as.factor(test$Title)
+
+require(plyr)     # for the revalue function 
+require(stringr)  # for the str_sub function
+
+## test a character as an EVEN single digit
+isEven <- function(x) x %in% c("0","2","4","6","8") 
+## test a character as an ODD single digit
+isOdd <- function(x) x %in% c("1","3","5","7","9") 
+
+## function to add features to training or test data frames
+featureEngrg <- function(data) {
+  ## Using Fate ILO Survived because term is shorter and just sounds good
+  data$Fate <- data$Survived
+  ## Revaluing Fate factor to ease assessment of confusion matrices later
+  data$Fate <- revalue(data$Fate, c("1" = "Survived", "0" = "Perished"))
+  ## Boat.dibs attempts to capture the "women and children first"
+  ## policy in one feature.  Assuming all females plus males under 15
+  ## got "dibs' on access to a lifeboat
+  data$Boat.dibs <- "No"
+  data$Boat.dibs[which(data$Sex == "female" | data$Age < 15)] <- "Yes"
+  data$Boat.dibs <- as.factor(data$Boat.dibs)
+  ## Family consolidates siblings and spouses (SibSp) plus
+  ## parents and children (Parch) into one feature
+  data$Family <- data$SibSp + data$Parch
+  ## Fare.pp attempts to adjust group purchases by size of family
+  data$Fare.pp <- data$Fare/(data$Family + 1)
+  ## Giving the traveling class feature a new look
+  data$Class <- data$Pclass
+  data$Class <- revalue(data$Class, 
+                        c("1"="First", "2"="Second", "3"="Third"))
+  ## First character in Cabin number represents the Deck 
+  data$Deck <- substring(data$Cabin, 1, 1)
+  data$Deck[ which( is.na(data$Deck ))] <- "UNK"
+  data$Deck <- as.factor(data$Deck)
+  ## Odd-numbered cabins were reportedly on the port side of the ship
+  ## Even-numbered cabins assigned Side="starboard"
+  data$cabin.last.digit <- str_sub(data$Cabin, -1)
+  data$Side <- "UNK"
+  data$Side[which(isEven(data$cabin.last.digit))] <- "port"
+  data$Side[which(isOdd(data$cabin.last.digit))] <- "starboard"
+  data$Side <- as.factor(data$Side)
+  data$cabin.last.digit <- NULL
+  return (data)
+}
+
+set.seed(23)
+training.rows <- createDataPartition(train$Survived, 
+                                     p = 0.8, list = FALSE)
+train.batch <-train[training.rows, ]
+test.batch <- train[-training.rows, ]
+
+# Using logistic regression
+Titanic.logit.1 <- glm(Survived ~ Sex + Pclass + Age + SibSp + Parch + Embarked + Fare, 
+                       data = train.batch, family=binomial("logit"))
+Titanic.logit.1
+
+
+1 - pchisq(315.1,df=9)
+
+#Using anova test
+
+anova(Titanic.logit.1, test="Chisq")
+
+# Using glm
+set.seed(35)
+glm.tune.1 <- train(Fate ~ Sex + Class + Age + Family + Embarked,
+                    data = train.batch,
+                    method = "glm",
+                    metric = "ROC",
+                    trControl = cv.ctrl)
+
+
+
+# Define control function to handle optional arguments for train function
+## Models to be assessed based on largest absolute area under ROC curve
+cv.ctrl <- trainControl(method = "repeatedcv", repeats = 3,
+                        summaryFunction = twoClassSummary,
+                        classProbs = TRUE)
+
+
+#Making a random forest model
+measurements <- formula(Survived ~ Pclass,Name,Sex,Age,SibSp,Parch,Ticket,Class,Fare)
+model <- randomForest(measurements,data=train,importance=TRUE,ntree=2000)
+model
+varImpPlot(model)
+predictions <- predict(model,test)
+submit <- data.frame(PassengerId = test$PassengerId, Survived = predictions)
+
+
+# Making a neural net
+neural_net <- neuralnet(formula = measurements, data = train, hidden = 3)
+
+
+write.csv(submit, file = "firstforest.csv", row.names = FALSE)
+forest_accuracy <- sum(test_lols$Survived == predictions)/nrow(test_lols)
+table(pred = predictions, true = test_lols$Survived)
+
+
 
